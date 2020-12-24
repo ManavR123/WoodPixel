@@ -24,6 +24,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define TRLIB_SERIALIZABLE_HPP_
 
 #include <iomanip>
+#include <ctime>
 
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -266,8 +267,11 @@ public:
     }
     else
     {
-      const boost::filesystem::path path_tiff = get_unique_path(base_path, path, ".tiff");
+      std::clock_t start;
+      start = std::clock();
+      const boost::filesystem::path path_tiff = get_unique_path(base_path, path, ".bmp");
       cv::imwrite((base_path / path_tiff).string(), mat);
+      std::cout << "Time: " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
       serialize(tree, key, path_tiff.string(), base_path, path);
     }
   }

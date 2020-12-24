@@ -27,6 +27,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <iostream>
 #include <random>
 #include <vector>
+#include <ctime>
 
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
@@ -122,6 +123,7 @@ int main(int argc, char *argv[])
       blob_image.at<cv::Vec3b>(p) = color;
     }
   }
+  std::cout << "HELLO" << std::endl;
 
   std::vector<PatchRegion> patches;
   for (const Blob &blob : blobs)
@@ -129,16 +131,24 @@ int main(int argc, char *argv[])
     patches.emplace_back(1, blob.points());
   }
 
+  std::cout << "HELLO2" << std::endl;
+
   pt::ptree root;
   pt::ptree tree_patches;
+  int i = 0;
   for (const PatchRegion &patch : patches)
   {
+    std::clock_t start;
+    start = std::clock();
+    std::cout << "Iteration - " << i << std::endl;
     tree_patches.push_back(std::make_pair("", patch.save(path_out_parent, "patches")));
+    std::cout << "Time: " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
+    i++;
   }
   root.add_child("patches", tree_patches);
   pt::write_json(path_out.string(), root);
 
-  cv::imshow("Blob Image", blob_image);
+  cv::imwrite("blob.jpg", blob_image);
   cv::waitKey();
 
   return 0;

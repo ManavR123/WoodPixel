@@ -692,6 +692,23 @@ boost::property_tree::ptree PatchRegion::save(const boost::filesystem::path &bas
   return tree;
 }
 
+boost::property_tree::ptree PatchRegion::save(const boost::filesystem::path &base_path, const boost::filesystem::path &path, int index) const
+{
+  boost::property_tree::ptree tree;
+  serialize(tree, "curves_top", m_curves_top, base_path, path);
+  serialize(tree, "curves_bot", m_curves_bot, base_path, path);
+  serialize(tree, "curves_left", m_curves_left, base_path, path);
+  serialize(tree, "curves_right", m_curves_right, base_path, path);
+  serialize(tree, "curves_diag", m_curves_diag, base_path, path);
+  serialize(tree, "bounding_box", m_bounding_box, base_path, path);
+  serialize_image(tree, "mask", m_mask, base_path, path, index);
+  serialize(tree, "sub_regions", m_sub_regions, base_path, path);
+  serialize(tree, "rectangular", m_rectangular, base_path, path);
+  serialize(tree, "target_index", m_target_index, base_path, path);
+  serialize(tree, "coordinate", m_coordinate, base_path, path);
+  return tree;
+}
+
 void PatchRegion::load(const boost::filesystem::path &base_path, const boost::property_tree::ptree &tree)
 {
   deserialize(tree, "curves_top", m_curves_top, base_path);

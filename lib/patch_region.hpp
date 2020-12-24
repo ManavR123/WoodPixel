@@ -228,6 +228,7 @@ public:
 
   virtual void load(const boost::filesystem::path &base_path, const boost::property_tree::ptree &tree) override;
   virtual boost::property_tree::ptree save(const boost::filesystem::path &base_path, const boost::filesystem::path &path) const override;
+  virtual boost::property_tree::ptree save(const boost::filesystem::path &base_path, const boost::filesystem::path &path, int index) const;
 
 private:
   void init_curves(cv::Rect bounding_box);

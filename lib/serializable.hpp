@@ -24,7 +24,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #define TRLIB_SERIALIZABLE_HPP_
 
 #include <iomanip>
-#include <ctime>
+#include <chrono>
 
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -259,7 +259,7 @@ public:
   /*
    * cv::Mat as image
    */
-  static void serialize_image(boost::property_tree::ptree &tree, const std::string &key, const cv::Mat &mat, const boost::filesystem::path &base_path, const boost::filesystem::path &path)
+  static void serialize_image(boost::property_tree::ptree &tree, const std::string &key, const cv::Mat &mat, const boost::filesystem::path &base_path, const boost::filesystem::path &path, int index = -1)
   {
     if (mat.empty())
     {
@@ -267,11 +267,20 @@ public:
     }
     else
     {
-      std::clock_t start;
-      start = std::clock();
-      const boost::filesystem::path path_tiff = get_unique_path(base_path, path, ".bmp");
+      if (!boost::filesystem::exists(base_path / path)) {
+        boost::filesystem::create_directories(base_path / path);
+      }
+
+      boost::filesystem::path path_tiff;
+      if (index != -1) {
+        std::stringstream ss;
+        ss << std::setw(8) << std::setfill('0') << index << ".bmp";
+        path_tiff = path / ss.str();
+      } else {
+        path_tiff = get_unique_path(base_path, path, ".bmp");
+      }
+
       cv::imwrite((base_path / path_tiff).string(), mat);
-      std::cout << "Time: " << (std::clock() - start) / (double)(CLOCKS_PER_SEC / 1000) << " ms" << std::endl;
       serialize(tree, key, path_tiff.string(), base_path, path);
     }
   }

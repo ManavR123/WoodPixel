@@ -1,6 +1,7 @@
 build/
 *~
-finishNet/__pycache__
+*__pycache__
 .vscode/
 output/
 data/
+env/

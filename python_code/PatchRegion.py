@@ -66,12 +66,14 @@ class PatchRegion:
                 if neighbor != self:
                     self.neighbors.add(neighbor)
 
-    def merge(self, edge_map):
+    def merge(self, edge_map, pixel_map):
         """
         Merge this patch into its smallest neighbor
         """
         neighbor = min(self.neighbors, key=len)
         neighbor.pixels.extend(self.pixels)
+        for pixel in self.pixels:
+            pixel_map[pixel] = neighbor
 
         # Since we are removing a patch, edges will need to be updated
         for pixel in self.edge_pixels:

@@ -7,7 +7,9 @@ im = cv.imread("alan_edges.png", 0)
 image_contours = np.ones((im.shape[0], im.shape[1], 3)) * 255
 ret, thresh = cv.threshold(im, 127, 255, 0)
 contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
-cv.drawContours(image_contours, contours, -1, (0, 0, 0), 1)
+cv.drawContours(image_contours, [c for c in contours if len(c) > 500], -1, (0, 0, 0), 1)
+
+cv.imwrite("alan_contours.png", image_contours)
 
 
 def is_extendable(im, point):
@@ -35,7 +37,7 @@ for i in range(0, len(contours)):
     # only look at contours with at least 500 points
     if len(contours[i]) < 500:
         continue
-
+    print(contours[i].shape)
     # need to remove extra dummy dimension
     c = contours[i].squeeze(1)
 
@@ -72,4 +74,4 @@ for i in range(0, len(contours)):
                     1,
                 )
 
-cv.imwrite("contours.png", image_contours)
+cv.imwrite("alan_contours_segmented.png", image_contours)

@@ -113,15 +113,4 @@ class PatchRegion:
         asssume here that the center is more likely to have important details that
         justify having smaller patch regions.
         """
-        center = np.average(self.pixels)
-        image_center = np.round(np.array([image.shape[0], image.shape[1]]) / 2)
-        dist = np.linalg.norm(image_center - center)
-        SIZE_THRESHOLD_MIN, SIZE_THRESHOLD_MAX = 250, 5000
-        MAX_DISTANCE = 400
-        threshold = (
-            SIZE_THRESHOLD_MIN
-            + (SIZE_THRESHOLD_MAX - SIZE_THRESHOLD_MIN)
-            * min(dist, MAX_DISTANCE)
-            / MAX_DISTANCE
-        )
-        return len(self.pixels) > threshold
+        return len(self.pixels) > 50

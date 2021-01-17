@@ -1,9 +1,16 @@
-import numpy as np
-import cv2 as cv
-from collections import defaultdict
-from scipy.interpolate import CubicSpline
-from TriangleRegion import TriangleRegion
 import argparse
+import json
+import os
+import shutil
+from collections import defaultdict
+
+import cv2 as cv
+import numpy as np
+from scipy.interpolate import CubicSpline
+from tqdm import tqdm
+
+from TriangleRegion import TriangleRegion
+from wn_test import wn_PnPoly
 
 np.random.seed(42069)
 # Constants
@@ -12,7 +19,7 @@ MIN_DIST = 50
 EPS = 0.5
 EDGE_TOLERANCE = 10
 COUNTOUR_THRESHOLD = 500
-NUM_ATTEMPTS_THRESHOLD = 1000
+NUM_RANDOM_ATTEMPTS_THRESHOLD = 1000
 NUM_RANDOM_POINTS_THRESHOLD = 100
 
 
@@ -43,14 +50,23 @@ def convert_to_contours(points):
 
 
 def make_spline(points):
-    # assert len(points) == len(set([tuple(p) for p in points])), "Points contains duplicates"
+    """
+    Helper function to create a spline function from a set of contour points
+    """
+    # Calculate distances to parameterize the points and create a spline
+    # from distance to pixel location.
     distance = np.cumsum(np.sqrt(np.sum(np.diff(points, axis=0) ** 2, axis=1)))
     distance = np.insert(distance, 0, 0)
     f = CubicSpline(distance, points)
     return f, distance
 
 
-def invalid_point(point, dist, img):
+def invalid_point(point, points, img):
+    min_neighbor = min(
+        points,
+        key=lambda x: np.sqrt((x[0] - point[0]) ** 2 + (x[1] - point[1]) ** 2),
+    )
+    dist = np.sqrt((min_neighbor[0] - point[0]) ** 2 + (min_neighbor[1] - point[1]) ** 2)
     return (
         dist < MIN_DIST
         or point[0] < EDGE_TOLERANCE
@@ -82,42 +98,40 @@ def invalid_curve(points, p1, p2, img, edge_color):
     return False
 
 
-def invalid_curve_triangle(triangles, p1, p2, f, distance, img, threshold=0.01, eps=0.5):
+def invalid_curve_triangle(triangles, p1, p2, f, distance, img, threshold=0.01, eps=0.1):
+    """
+    Checks if a contour given as a spline function crosses any of the edges in the quadrilateral
+    it is bounded by. threshold determines a tolerance of how close it may be and eps is the step
+    size by which we walk along the contour.
+    """
     assert len(triangles) == 2, f"There should only be 2 triangles sharing an edge, you had {len(triangles)}"
     edges = [edge for t in triangles for edge in t.edge_map if edge != (p1, p2) and edge != (p2, p1)]
-    assert len(edges) == 4, f"Too many edges, {len(edges)}"
+    assert len(edges) == 4, f"Inconsistent number of edges, {len(edges)}"
     for i in np.arange(0, distance[-1], eps):
         point = f(i)
+        # uncomment line below to visualize steps
+        # cv.circle(img, tuple(np.rint(point).astype(int)), 1, (0, 0, 255), 0)
+        # if point is threshold away from each edge or within eps of a vertex, it a valid else its invalid
         if (
             any([projection_dist(np.array(edge[0]), np.array(edge[1]), np.array(point)) < threshold for edge in edges])
-            and np.linalg.norm(point - np.array(list(p2))) > eps and np.linalg.norm(point - np.array(list(p1))) > eps
+            and np.linalg.norm(point - np.array(list(p2))) > eps
+            and np.linalg.norm(point - np.array(list(p1))) > eps
         ):
-            cv.circle(img, tuple(np.rint(point).astype(int)), 1, (0, 0, 255), 1)
             return True
-    print("False")
     return False
 
 
 def projection_dist(a, b, p):
-    ret = np.linalg.norm(np.cross(b - a, a - p)) / np.linalg.norm(b - a)
-    return ret
+    """
+    Calculate thr distance from point p to the line ab.
+    @source - https://stackoverflow.com/questions/39840030/distance-between-point-and-a-line-from-two-points
+    """
+    return np.linalg.norm(np.cross(b - a, a - p)) / np.linalg.norm(b - a)
 
 
-def main(inputfile, outputfile):
-    # Read in image with edges, calculate contours, and optionally draw them
-    im = cv.imread(inputfile, 0)
-    image_contours = np.ones((im.shape[0], im.shape[1], 3)) * 255
-    ret, thresh = cv.threshold(im, 127, 255, 0)
-    contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
-    # cv.drawContours(image_contours, [c for c in contours if len(c) > COUNTOUR_THRESHOLD], -1, (255, 0, 0), 1)
-
-    # Keep of a list of points to use for the triangles
+def get_border_points(im):
+    """Add points around the border of the image"""
     points = []
-    # Keep a map of points that are in between consecutive points on the image contours
-    edge_to_curve = {}
-    edge_to_spline = {}
-
-    # Add points around the border of the image
     points += [(0, i) for i in range(0, im.shape[0] - STEP_SIZE, STEP_SIZE)]
     points.append((0, im.shape[0] - 1))
 
@@ -129,20 +143,34 @@ def main(inputfile, outputfile):
 
     points += [(i, im.shape[0] - 1) for i in range(0, im.shape[1] - STEP_SIZE, STEP_SIZE)]
     points.append((im.shape[1] - 1, im.shape[0] - 1))
+    return points
+
+
+def main(inputfile, outputdir):
+    # Read in image with edges and calculate contours
+    im = cv.imread(inputfile, 0)
+    image_contours = np.ones((im.shape[0], im.shape[1], 3)) * 255
+    ret, thresh = cv.threshold(im, 127, 255, 0)
+    contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
+
+    # Keep of a list of points to use for the triangles
+    points = []
+    points += get_border_points(im)
 
     # Traverse the contours of the image and samples points every STEP_SIZE
     # such that they are MIN_DIST away from existing points. Store points in between
     # sampled points and store them in edge_to_curve.
+    edge_to_curve = {}
     for i in range(0, len(contours)):
         # only look at contours with at least COUNTOUR_THRESHOLD points
         if len(contours[i]) < COUNTOUR_THRESHOLD:
             continue
 
+        # uncomment line below to visualize contours
+        # cv.drawContours(image_contours, contours, i, (255, 0, 0), 1)
+
         # need to remove extra dummy dimension
         c = contours[i].squeeze(1)
-
-        # Calculate distances to parameterize the contour and create a spline
-        # from distance to pixel location.
         f, distance = make_spline(c)
 
         # Step through points in the spline by EPS steps. Store the last control point
@@ -152,67 +180,55 @@ def main(inputfile, outputfile):
         for i in np.arange(0, int(distance[-1]), EPS):
             point = tuple(np.rint(f(i)).astype(int))
             if i % STEP_SIZE == 0:
-                # Enforce MIN_DIST constraint
-                dist = -1
-                if points:
-                    min_neighbor = min(
-                        points,
-                        key=lambda x: np.sqrt((x[0] - point[0]) ** 2 + (x[1] - point[1]) ** 2),
-                    )
-                    dist = np.sqrt((min_neighbor[0] - point[0]) ** 2 + (min_neighbor[1] - point[1]) ** 2)
-                if points and invalid_point(point, dist, image_contours):
+                # Check if point is valid
+                if points and invalid_point(point, points, image_contours):
                     prev_point = None
                     curve_points = []
                     continue
                 points.append(point)
                 if prev_point:
                     edge = (prev_point[0], point)
-                    edge_to_curve[edge] = curve_points
+                    edge_to_curve[edge] = sorted(list(set(curve_points)))
                     curve_points = []
-                    edge_to_spline[edge] = (f, prev_point[1], i)
                 prev_point = (point, i)
             elif prev_point:
                 curve_points.append(point)
 
     # Add up to NUM_RANDOM_POINTS_THRESHOLD random poins across the image
     num_random_points, num_attempts = 0, 0
-    while num_random_points < NUM_RANDOM_POINTS_THRESHOLD and num_attempts < NUM_ATTEMPTS_THRESHOLD:
-        print(num_attempts, num_random_points)
+    while num_random_points < NUM_RANDOM_POINTS_THRESHOLD and num_attempts < NUM_RANDOM_ATTEMPTS_THRESHOLD:
+        print(f"{num_random_points}/{num_attempts}", end="\r")
         num_attempts += 1
         point = (
             np.rint(np.random.normal(im.shape[1] / 2, 75)).astype(int),
             np.rint(np.random.normal(im.shape[0] / 2, 75)).astype(int),
         )
-        dist = -1
-        if points:
-            min_neighbor = min(
-                points,
-                key=lambda x: np.sqrt((x[0] - point[0]) ** 2 + (x[1] - point[1]) ** 2),
-            )
-            dist = np.sqrt((min_neighbor[0] - point[0]) ** 2 + (min_neighbor[1] - point[1]) ** 2)
-        if points and invalid_point(point, dist, image_contours):
+        if points and invalid_point(point, points, image_contours):
             continue
         points.append(point)
         num_random_points += 1
+    print(f"{num_random_points}/{num_attempts} random points added")
 
     # Create a rectangle that bound the image so it can be subdivided with
     # Delaunay triangles
     r = (0, 0, im.shape[1], im.shape[0])
     subdiv = cv.Subdiv2D(r)
-    # Insert all of our points into the sub-division
     for point in points:
-        # cv.circle(image_contours, point, 1, (0, 0, 255), 2)
+        # uncomment line below to visualize chosen points
+        cv.circle(image_contours, point, 1, (0, 0, 255), 2)
         subdiv.insert(point)
 
     triangleList = subdiv.getTriangleList()
-    print(f"Number of triangles: {len(triangleList)}")
+    print(f"Number of triangles created: {len(triangleList)}")
 
     # Set to different colors to visualize different edges
     EDGE_COLOR = (0, 0, 0)
     FIXED_CURVE_COLOR = (0, 255, 0)
     CURVE_COLOR = (255, 0, 0)
 
-    # Iterate through tri
+    # Iterate through triangles and create TriangleRegion objects and draw lines connecting. For edges that contain points
+    # that are both on a contour, determine if the contour between the two points would function as a valid border
+    # if it does, use that as the edge, else just use the line.
     triangle_regions = []
     todo = set()
     edge_to_triangle = defaultdict(list)
@@ -238,11 +254,13 @@ def main(inputfile, outputfile):
     for (p1, p2) in todo:
         contour = edge_to_curve[(p1, p2)]
         triangles = edge_to_triangle[(p1, p2) if (p1, p2) in edge_to_triangle else (p2, p1)]
-        f, distance = make_spline(list(set(contour)))
-        if invalid_curve_triangle(triangles, p1, p2, f, distance, image_contours):
+        f, distance = make_spline(contour)
+        if True or invalid_curve_triangle(triangles, p1, p2, f, distance, image_contours):
             cv.line(image_contours, p1, p2, FIXED_CURVE_COLOR, 1, cv.LINE_AA, 0)
-        if True:
-            [t.set_contour(p1, p2, contour) for t in triangles]
+        else:
+            print(contour)
+            for t in triangles:
+                t.set_contour(p1, p2, contour)
             cv.drawContours(
                 image_contours,
                 convert_to_contours(contour),
@@ -250,19 +268,83 @@ def main(inputfile, outputfile):
                 CURVE_COLOR,
                 1,
             )
-            global_f, t1, t2 = edge_to_spline[(p1, p2)]
-            global_contour = [global_f(i) for i in np.arange(t1, t2, EPS)]
-            # cv.drawContours(
-            #     image_contours,
-            #     convert_to_contours(global_contour),
-            #     -1,
-            #     (255, 0, 255),
-            #     1,
-            # )
 
-    cv.imwrite(outputfile, image_contours)
-    # cv.imshow("Output", image_contours)
-    cv.waitKey(0)
+    # Create output json
+    all_pixels = []
+    output = np.zeros((im.shape[0], im.shape[1], 3))
+    print("Creating outputs...")
+    if os.path.isdir(outputdir):
+        shutil.rmtree(outputdir)
+    os.mkdir(outputdir)
+    patches_dir = os.path.join(outputdir, "patches")
+    os.mkdir(patches_dir)
+    patches = []
+    for t in tqdm(triangle_regions):
+        # form bounding box for the patch
+        edge_pixels = [t.p1, t.p2, t.p3]
+        for edge in t.edge_map:
+            if t.edge_map[edge]:
+                edge_pixels.extend(t.edge_map[edge])
+        x, y, w, h = cv.boundingRect(np.expand_dims(np.array(edge_pixels), axis=1))
+        # if t.id in [60, 78, 63]:
+        #     print((x,y), (x+w-1, y), (x, y+h-1), (x + w-1, y + h-1))
+        #     img = image_contours.copy()
+        #     cv.rectangle(img,(x,y),(x+w,y+h),(0, 255, 0),1)
+        #     cv.line(img, (x, y), (x+w-1, y), (0,0,255), 1, cv.LINE_AA, 0)
+        #     cv.line(img, (x, y), (x, y+h-1), (0,0,255), 1, cv.LINE_AA, 0)
+        #     cv.line(img, (x, y+h-1), (x+w-1, y+h-1), (0,0,255), 1, cv.LINE_AA, 0)
+        #     cv.line(img, (x+w-1, y), (x+w-1, y+h-1), (0,0,255), 1, cv.LINE_AA, 0)
+        #     cv.imshow("img", img)
+        #     cv.waitKey(0)
+        #     print(t.p1, t.p2, t.p3)
+        #     print(edge_pixels)
+        #     img[y, x] = (255, 0, 0)
+        #     img[y, x+w-1] = (255, 0, 0)
+        #     img[y+h-1, x] = (255, 0, 0)
+        #     img[y+h-1, x+w-1] = (255, 0, 0)
+        #     import pdb; pdb.set_trace()
+
+        # create binary mask that is only one for pixels
+        # that are actually in the patch
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for i in range(w):
+            for j in range(h):
+                point = (x + i, y + j)
+                if wn_PnPoly(point, edge_pixels):
+                    mask[j, i] = 255
+                    if all(output[point[1], point[0]] == (255, 255, 255)):
+                        output[point[1], point[0]] = (0, 0, 255)
+                    else:
+                        output[point[1], point[0]] = (255, 255, 255)
+                    all_pixels.append(point)
+
+        mask_path = os.path.join(patches_dir, f"{t.id:08}.bmp")
+        cv.imwrite(mask_path, mask)
+
+        centroid = ((t.p1[0] + t.p2[0] + t.p3[0]) // 3, (t.p1[1] + t.p2[1] + t.p3[1]) // 3)
+        cv.putText(image_contours, f"{t.id}", centroid, cv.FONT_HERSHEY_SIMPLEX, 0.25, (255, 0, 0), 1)
+ 
+        # Create patch entry
+        entry = {
+            "bounding_box": {"x": x, "y": y, "width": w, "height": h},
+            "mask": mask_path,
+            "sub_regions": "",
+            "rectangular": "false",
+            "target_index": "1",
+            "coordinate": {"x": "0", "y": "0"},
+        }
+
+        sorted_edges = [(t.p1, t.p2), (t.p2, t.p3), (t.p3, t.p1)]
+        for i, edge in enumerate(sorted_edges, 1):
+            entry[f"curve_{i}"] = {"knot_points": [{"x": int(kp[0]), "y": int(kp[1])} for kp in t.get_knots(*edge)]}
+
+        patches.append(entry)
+
+    cv.imwrite("output.png", output)
+    with open(os.path.join(outputdir, "grid.json"), "w") as f:
+        f.write(json.dumps({"patches": patches}, indent=4))
+    cv.imwrite(os.path.join(outputdir, "triangles.png"), image_contours)
+    assert len(all_pixels) == (im.shape[0] - 1) * (im.shape[1] - 1), f"Missed a few pixels. Expected {(im.shape[0] - 1) * (im.shape[1] - 1)}. Got {len(all_pixels)}"
 
 
 if __name__ == "__main__":

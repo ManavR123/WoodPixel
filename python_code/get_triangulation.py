@@ -98,7 +98,7 @@ def invalid_curve(points, p1, p2, img, edge_color):
     return False
 
 
-def invalid_curve_triangle(triangles, p1, p2, f, distance, img, threshold=0.01, eps=0.1):
+def invalid_curve_triangle(triangles, p1, p2, f, distance, img, threshold=0.1, eps=0.1):
     """
     Checks if a contour given as a spline function crosses any of the edges in the quadrilateral
     it is bounded by. threshold determines a tolerance of how close it may be and eps is the step
@@ -114,8 +114,6 @@ def invalid_curve_triangle(triangles, p1, p2, f, distance, img, threshold=0.01, 
         # if point is threshold away from each edge or within eps of a vertex, it a valid else its invalid
         if (
             any([projection_dist(np.array(edge[0]), np.array(edge[1]), np.array(point)) < threshold for edge in edges])
-            and np.linalg.norm(point - np.array(list(p2))) > eps
-            and np.linalg.norm(point - np.array(list(p1))) > eps
         ):
             return True
     return False
@@ -175,23 +173,25 @@ def main(inputfile, outputdir):
 
         # Step through points in the spline by EPS steps. Store the last control point
         # and a list of points we stepped through since the last control point
-        prev_point = None
+        last_ctrl_point, prev_point = None, None
         curve_points = []
         for i in np.arange(0, int(distance[-1]), EPS):
             point = tuple(np.rint(f(i)).astype(int))
             if i % STEP_SIZE == 0:
                 # Check if point is valid
                 if points and invalid_point(point, points, image_contours):
-                    prev_point = None
+                    last_ctrl_point = None
                     curve_points = []
                     continue
                 points.append(point)
-                if prev_point:
-                    edge = (prev_point[0], point)
-                    edge_to_curve[edge] = sorted(list(set(curve_points)))
+                if last_ctrl_point:
+                    edge = (last_ctrl_point[0], point)
+                    edge_to_curve[edge] = curve_points
                     curve_points = []
-                prev_point = (point, i)
-            elif prev_point:
+                last_ctrl_point = (point, i)
+                prev_point = point
+            elif last_ctrl_point and point != prev_point:
+                prev_point = point
                 curve_points.append(point)
 
     # Add up to NUM_RANDOM_POINTS_THRESHOLD random poins across the image
@@ -215,7 +215,7 @@ def main(inputfile, outputdir):
     subdiv = cv.Subdiv2D(r)
     for point in points:
         # uncomment line below to visualize chosen points
-        cv.circle(image_contours, point, 1, (0, 0, 255), 2)
+        # cv.circle(image_contours, point, 1, (0, 0, 255), 2)
         subdiv.insert(point)
 
     triangleList = subdiv.getTriangleList()
@@ -255,10 +255,9 @@ def main(inputfile, outputdir):
         contour = edge_to_curve[(p1, p2)]
         triangles = edge_to_triangle[(p1, p2) if (p1, p2) in edge_to_triangle else (p2, p1)]
         f, distance = make_spline(contour)
-        if True or invalid_curve_triangle(triangles, p1, p2, f, distance, image_contours):
+        if invalid_curve_triangle(triangles, p1, p2, f, distance, image_contours):
             cv.line(image_contours, p1, p2, FIXED_CURVE_COLOR, 1, cv.LINE_AA, 0)
         else:
-            print(contour)
             for t in triangles:
                 t.set_contour(p1, p2, contour)
             cv.drawContours(
@@ -271,6 +270,8 @@ def main(inputfile, outputdir):
 
     # Create output json
     all_pixels = []
+    bad_pixels = []
+    pixel_to_triangle = {}
     output = np.zeros((im.shape[0], im.shape[1], 3))
     print("Creating outputs...")
     if os.path.isdir(outputdir):
@@ -281,29 +282,16 @@ def main(inputfile, outputdir):
     patches = []
     for t in tqdm(triangle_regions):
         # form bounding box for the patch
-        edge_pixels = [t.p1, t.p2, t.p3]
-        for edge in t.edge_map:
+        sorted_edges = [(t.p1, t.p2), (t.p2, t.p3), (t.p3, t.p1)]
+        edge_pixels = []
+        for edge in sorted_edges:
+            edge_pixels.append(edge[0])
             if t.edge_map[edge]:
                 edge_pixels.extend(t.edge_map[edge])
+        if not len(edge_pixels) == len(set(edge_pixels)):
+            print(f"Edge pixels contains duplicates. There are {len(edge_pixels) - len(set(edge_pixels))} duplicates. These are all of the points {edge_pixels}")
         x, y, w, h = cv.boundingRect(np.expand_dims(np.array(edge_pixels), axis=1))
-        # if t.id in [60, 78, 63]:
-        #     print((x,y), (x+w-1, y), (x, y+h-1), (x + w-1, y + h-1))
-        #     img = image_contours.copy()
-        #     cv.rectangle(img,(x,y),(x+w,y+h),(0, 255, 0),1)
-        #     cv.line(img, (x, y), (x+w-1, y), (0,0,255), 1, cv.LINE_AA, 0)
-        #     cv.line(img, (x, y), (x, y+h-1), (0,0,255), 1, cv.LINE_AA, 0)
-        #     cv.line(img, (x, y+h-1), (x+w-1, y+h-1), (0,0,255), 1, cv.LINE_AA, 0)
-        #     cv.line(img, (x+w-1, y), (x+w-1, y+h-1), (0,0,255), 1, cv.LINE_AA, 0)
-        #     cv.imshow("img", img)
-        #     cv.waitKey(0)
-        #     print(t.p1, t.p2, t.p3)
-        #     print(edge_pixels)
-        #     img[y, x] = (255, 0, 0)
-        #     img[y, x+w-1] = (255, 0, 0)
-        #     img[y+h-1, x] = (255, 0, 0)
-        #     img[y+h-1, x+w-1] = (255, 0, 0)
-        #     import pdb; pdb.set_trace()
-
+    
         # create binary mask that is only one for pixels
         # that are actually in the patch
         mask = np.zeros((h, w), dtype=np.uint8)
@@ -311,8 +299,14 @@ def main(inputfile, outputdir):
             for j in range(h):
                 point = (x + i, y + j)
                 if wn_PnPoly(point, edge_pixels):
+                    if point in pixel_to_triangle:
+                        other_t = pixel_to_triangle[point]
+                        print(f"Triangle {t.id} tried to claim {point} but Triangle {other_t.id} already has it")
+                    else:
+                        pixel_to_triangle[point] = t
                     mask[j, i] = 255
-                    if all(output[point[1], point[0]] == (255, 255, 255)):
+                    if all(output[point[1], point[0]] == (255, 255, 255)) or all(output[point[1], point[0]] == (0, 0, 255)):
+                        bad_pixels.append(point)
                         output[point[1], point[0]] = (0, 0, 255)
                     else:
                         output[point[1], point[0]] = (255, 255, 255)
@@ -326,24 +320,28 @@ def main(inputfile, outputdir):
  
         # Create patch entry
         entry = {
+            "curves_top": "",
+            "curves_bot": "",
+            "curves_left": "",
+            "curves_right": "",
+            "curves_diag": "",
             "bounding_box": {"x": x, "y": y, "width": w, "height": h},
-            "mask": mask_path,
+            "mask": os.path.join("patches", f"{t.id:08}.bmp"),
             "sub_regions": "",
             "rectangular": "false",
-            "target_index": "1",
+            "target_index": "0",
             "coordinate": {"x": "0", "y": "0"},
         }
 
-        sorted_edges = [(t.p1, t.p2), (t.p2, t.p3), (t.p3, t.p1)]
         for i, edge in enumerate(sorted_edges, 1):
             entry[f"curve_{i}"] = {"knot_points": [{"x": int(kp[0]), "y": int(kp[1])} for kp in t.get_knots(*edge)]}
 
         patches.append(entry)
 
-    cv.imwrite("output.png", output)
     with open(os.path.join(outputdir, "grid.json"), "w") as f:
         f.write(json.dumps({"patches": patches}, indent=4))
     cv.imwrite(os.path.join(outputdir, "triangles.png"), image_contours)
+
     assert len(all_pixels) == (im.shape[0] - 1) * (im.shape[1] - 1), f"Missed a few pixels. Expected {(im.shape[0] - 1) * (im.shape[1] - 1)}. Got {len(all_pixels)}"
 
 

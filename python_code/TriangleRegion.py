@@ -16,9 +16,12 @@ class TriangleRegion:
     
     def set_contour(self, p1, p2, contour):
         assert self.has_edge(p1, p2), f"{(p1, p2)} edge does not exist. Only have {self.edge_map.keys()}"
-        key = (p1, p2) if (p1, p2) in self.edge_map else (p2, p1)
+        key = (p1, p2)
+        if not (p1, p2) in self.edge_map:
+            key = (p2, p1)
+            contour = contour[::-1]
         self.edge_map[key] = contour
-    
+
     def get_knots(self, p1, p2):
         assert self.has_edge(p1, p2), f"{(p1, p2)} edge does not exist. Only have {self.edge_map.keys()}"
         key = (p1, p2) if (p1, p2) in self.edge_map else (p2, p1)
